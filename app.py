@@ -130,7 +130,6 @@ def render_questionnaire(df_questions):
                 label=q_text,
                 options=options,
                 key=f"q_{q_num}",
-                required=True,
                 index=None  # 初始无选择，强制用户点击
             )
             # 存储赋值
@@ -228,4 +227,5 @@ def main():
             st.warning("⚠️ Please complete all questions before submission!")
 
 if __name__ == "__main__":
+
     main()
