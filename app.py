@@ -42,38 +42,53 @@ RISK_CONFIG = {
 # ===================== 加载核心资源（Cloud 缓存优化，仅加载1次） =====================
 @st.cache_resource(ttl=None)  # 永久缓存，Cloud重启才会重新加载
 def load_core_resources():
-    """加载CSV题目、RF模型、特征掩码，适配Streamlit Cloud"""
-    # 1. 加载CSV题目文件（核心修改：替代Excel）
-    try:
-        df_questions = pd.read_csv(QUESTION_CSV_PATH, encoding='utf-8-sig')
-        # 验证必要列，缺失则报错
-        required_cols = ["Question", "Option1", "Value1", "Option2", "Value2", "Option3", "Value3", "Option4", "Value4"]
-        for col in required_cols:
-            if col not in df_questions.columns:
-                st.error(f"CSV file missing required column: {col}! Check your csv format.")
-                st.stop()
-        # 过滤空题，保留有效题目
-        df_questions = df_questions.dropna(subset=["Question"]).reset_index(drop=True)
-        if len(df_questions) != 75:
-            st.warning(f"⚠️ {len(df_questions)} questions found in CSV (expected 75). Please confirm!")
-    except Exception as e:
-        st.error(f"Failed to load question CSV: {str(e)}. Check file name/path!")
+    """加载CSV题目、RF模型、特征掩码，适配Streamlit Cloud，增加编码兜底"""
+    # 1. 加载CSV题目文件（核心修改：GBK编码+多编码兜底，解决解码失败）
+    df_questions = None
+    # 定义兼容的编码顺序，优先GBK（解决0xa1字节问题），兜底utf-8-sig
+    encodings = ['gbk', 'gb18030', 'utf-8-sig']
+    for enc in encodings:
+        try:
+            df_questions = pd.read_csv(QUESTION_CSV_PATH, encoding=enc)
+            st.success(f"✅ CSV file loaded successfully with encoding: {enc}")
+            break
+        except Exception as e:
+            continue
+    
+    # 所有编码都失败时报错
+    if df_questions is None:
+        st.error(f"Failed to load question CSV: All encodings ({encodings}) decode failed! Check file encoding (suggest GBK/UTF-8).")
         st.stop()
+
+    # 验证必要列，缺失则报错
+    required_cols = ["Question", "Option1", "Value1", "Option2", "Value2", "Option3", "Value3", "Option4", "Value4"]
+    for col in required_cols:
+        if col not in df_questions.columns:
+            st.error(f"CSV file missing required column: {col}! Check your csv format.")
+            st.stop()
+    # 过滤空题，保留有效题目
+    df_questions = df_questions.dropna(subset=["Question"]).reset_index(drop=True)
+    if len(df_questions) != 75:
+        st.warning(f"⚠️ {len(df_questions)} questions found in CSV (expected 75). Please confirm!")
 
     # 2. 加载RF模型
     try:
         model = joblib.load(MODEL_PATH)
+        st.success("✅ RF model loaded successfully!")
     except Exception as e:
-        st.error(f"Failed to load RF model: {str(e)}. Check model file name!")
+        st.error(f"Failed to load RF model: {str(e)}. Check model file name/path!")
         st.stop()
 
-    # 3. 加载特征掩码（无则使用所有特征）
+    # 3. 加载特征掩码（无则使用所有特征，优化异常提示）
+    best_mask = None
     try:
         feat_info = joblib.load(FEATURE_MASK_PATH)
         best_mask = np.array(feat_info["best_feature_mask"])
+        st.success("✅ Feature mask loaded successfully!")
+    except FileNotFoundError:
+        st.warning(f"⚠️ Feature mask file {FEATURE_MASK_PATH} not found. Using all features!")
     except Exception as e:
-        st.warning(f"⚠️ Failed to load feature mask: {str(e)}. Using all features!")
-        best_mask = None
+        st.warning(f"⚠️ Failed to parse feature mask: {str(e)}. Using all features!")
 
     return df_questions, model, best_mask
 
@@ -131,25 +146,36 @@ def render_questionnaire(df_questions):
     # 转换为模型输入格式（按题号排序，特征顺序与训练一致）
     input_feat = np.array([user_answers[q] for q in sorted(user_answers.keys())]).reshape(1, -1)
     # 应用特征掩码
-    if best_mask is not None:
+    if best_mask is not None and len(best_mask) == input_feat.shape[1]:
         input_feat = input_feat[:, best_mask]
+        st.info(f"✅ Using feature mask (selected {sum(best_mask)} features)")
+    elif best_mask is not None:
+        st.warning(f"⚠️ Feature mask shape mismatch! Mask: {len(best_mask)}, Input: {input_feat.shape[1]}. Using all features!")
+
     return input_feat
 
 # ===================== 风险预测与结果展示（Cloud 可视化优化） =====================
 def show_prediction_result(input_feat):
     """预测概率，按等级展示彩色结果+建议"""
     st.subheader("📊 Risk Prediction Result", divider="red")
-    # 模型预测（兼容Pipeline/纯模型）
+    # 模型预测（兼容Pipeline/纯模型，增加异常捕获）
     try:
         if hasattr(rf_model, 'named_steps'):
             # Pipeline模型：先标准化再预测
-            risk_prob = rf_model.predict_proba(rf_model.named_steps['scaler'].transform(input_feat))[0,1]
+            scaler = rf_model.named_steps.get('scaler')
+            if scaler:
+                input_feat_scaled = scaler.transform(input_feat)
+                risk_prob = rf_model.predict_proba(input_feat_scaled)[0,1]
+            else:
+                risk_prob = rf_model.predict_proba(input_feat)[0,1]
         else:
             # 纯模型：直接预测
             risk_prob = rf_model.predict_proba(input_feat)[0,1]
         risk_pct = round(risk_prob * 100, 2)  # 百分比保留2位小数
+        st.success(f"✅ Prediction completed! Risk probability: {risk_pct}%")
     except Exception as e:
         st.error(f"Prediction failed: {str(e)}. Check feature order/model compatibility!")
+        st.error(f"Input feature shape: {input_feat.shape}, Model expected features: {rf_model.n_features_in_ if hasattr(rf_model, 'n_features_in_') else 'Unknown'}")
         return
 
     # 匹配风险等级
@@ -161,30 +187,30 @@ def show_prediction_result(input_feat):
         level = "high"
     cfg = RISK_CONFIG[level]
 
-    # 彩色大字体显示概率（Cloud页面更醒目）
+    # 彩色大字体显示概率（Cloud页面更醒目，优化样式）
     st.markdown(
         f"""
-        <div style="text-align: center; padding: 25px; border-radius: 12px; background: #f0f2f6;">
-            <h2 style="color: {cfg['color']}; margin: 0;">{risk_pct}%</h2>
-            <h3 style="color: {cfg['color']}; margin: 5px 0 0 0;">{level.upper()} RISK</h3>
+        <div style="text-align: center; padding: 30px; border-radius: 15px; background: #f0f2f6; margin: 20px 0;">
+            <h2 style="color: {cfg['color']}; margin: 0; font-size: 3em; font-weight: bold;">{risk_pct}%</h2>
+            <h3 style="color: {cfg['color']}; margin: 10px 0 0 0; font-size: 1.8em;">{level.upper()} RISK</h3>
         </div>
         """,
         unsafe_allow_html=True
     )
 
-    # 展示临床建议（高风险含可点击链接）
+    # 展示临床建议（高风险含可点击链接，优化样式）
     st.markdown("### 🩺 Clinical Advice")
     st.markdown(
         f"""
-        <div style="padding: 18px; border-left: 6px solid {cfg['color']}; background: #f0f2f6; border-radius: 8px;">
-            <p style="font-size: 1.1em; line-height: 1.6;">{cfg['advice']}</p>
+        <div style="padding: 20px; border-left: 8px solid {cfg['color']}; background: #f0f2f6; border-radius: 10px; margin: 10px 0;">
+            <p style="font-size: 1.15em; line-height: 1.8;">{cfg['advice']}</p>
         </div>
         """,
         unsafe_allow_html=True
     )
 
-    # 审稿专用提示
-    st.caption("⚠️ Disclaime: This result is for clinical review only and does not replace professional medical diagnosis.")
+    # 审稿专用提示（修正拼写错误 Disclaime → Disclaimer）
+    st.caption("⚠️ Disclaimer: This result is for clinical review only and does not replace professional medical diagnosis.")
 
 # ===================== 页面主逻辑（Cloud 交互优化） =====================
 def main():
@@ -192,11 +218,14 @@ def main():
     st.caption("Deployed on Streamlit Cloud | For Expert Review")
     # 渲染问卷
     input_features = render_questionnaire(df_questions)
-    # 提交按钮（占满宽度，Cloud端更易点击）
-    if st.button("📤 Submit Answers & Predict Risk", type="primary", use_container_width=True):
+    # 提交按钮（占满宽度，Cloud端更易点击，增加禁用逻辑）
+    submit_btn = st.button("📤 Submit Answers & Predict Risk", type="primary", use_container_width=True)
+    if submit_btn:
         if input_features is not None:
-            with st.spinner("🔍 Predicting risk... Please wait a moment."):
+            with st.spinner("🔍 Predicting risk... Please wait a moment (about 2-5s)..."):
                 show_prediction_result(input_features)
+        else:
+            st.warning("⚠️ Please complete all questions before submission!")
 
 if __name__ == "__main__":
     main()
