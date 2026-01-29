@@ -1,0 +1,12 @@
+# 基础网页框架
+streamlit==1.50.0
+# 数据处理
+pandas==2.1.4
+numpy==1.26.3
+# 模型相关（随机森林+模型加载）
+scikit-learn==1.3.2
+joblib==1.3.2
+# 其他基础依赖
+python-dateutil==2.9.0
+pytz==2025.1
+six==1.17.0
