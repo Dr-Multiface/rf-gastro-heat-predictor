@@ -7,13 +7,13 @@ warnings.filterwarnings('ignore')
 
 # ===================== 全局配置（Streamlit Cloud 专属） =====================
 st.set_page_config(
-    page_title="Child GI Heat Retention Risk Predictor",
+    page_title="Child Gastrointestinal Heat Retention Risk Predictor",
     page_icon="🏥",
     layout="wide"  # 宽屏适配75道题
 )
 
 # 文件名（与本地项目文件夹中的文件严格一致，Cloud无需路径，直接写文件名）
-QUESTION_CSV_PATH = "Website Question Value RF cloud.csv"  # 替换为CSV文件
+QUESTION_CSV_PATH = "Website Question Value RF cloud.csv"
 MODEL_PATH = "RF_best_model.pkl"
 FEATURE_MASK_PATH = "RF_feature_info.pkl"
 
@@ -38,6 +38,20 @@ RISK_CONFIG = {
 3. Ensure adequate regular physical activity (per WHO recommendations). See <a href="https://www.who.int/zh/news-room/fact-sheets/detail/physical-activity" target="_blank">WHO Physical Activity Fact Sheet</a>."""
     }
 }
+
+# 🌟 核心：训练时最终筛选的158个有效二值特征的精准映射表（必须和训练时的特征顺序、来源完全一致！）
+# 格式：[(题目编号, 该题有效选项的原始赋值, 特征含义), ...]，共158个元素
+# 示例：第1个特征是Q1选1（赋值1）对应的哑变量，第2个是Q1选2（赋值2）对应的哑变量，第3个是Q5选1（赋值1）对应的哑变量...
+TRAIN_VALID_158_FEATURES = [
+    (1, 1, "Q1_Option1_哑变量"),   # 第1个特征：Q1选赋值1的选项，哑变量为1，否则0
+    (1, 2, "Q1_Option2_哑变量"),   # 第2个特征：Q1选赋值2的选项，哑变量为1，否则0
+    (5, 1, "Q5_Option1_哑变量"),   # 第3个特征：Q5选赋值1的选项，哑变量为1，否则0
+    (5, 2, "Q5_Option2_哑变量"),   # 第4个特征：Q5选赋值2的选项，哑变量为1，否则0
+    # ... 继续补充，直到满158个元素，顺序必须和训练时一致！
+    # 注意：数值题（若有）直接按原始赋值作为特征，无需拆哑变量，直接写(题号, 0, "数值题原始特征")即可
+]
+# 验证：列表长度必须严格等于158
+assert len(TRAIN_VALID_158_FEATURES) == 158, "映射表长度必须为158，和训练时特征数量一致！"
 
 # ===================== 加载核心资源（Cloud 缓存优化，仅加载1次） =====================
 @st.cache_resource(ttl=None)  # 永久缓存，Cloud重启才会重新加载
@@ -95,12 +109,34 @@ def load_core_resources():
 # 执行加载（页面启动时仅1次）
 df_questions, rf_model, best_mask = load_core_resources()
 
-# ===================== 渲染75道题问卷（单选+必填+分批次） =====================
+# ===================== 核心函数：生成158个有效特征（支持无效选项赋值为0） =====================
+def generate_exact_158_feats(user_answers):
+    """
+    根据用户答题结果，按训练时的映射表精准生成158个有效二值特征
+    - 选中有效选项（训练时参与特征筛选的选项）→ 对应哑变量=1，其他=0
+    - 选中无效选项（补充的选项，Value为空）→ 该题所有对应哑变量=0
+    user_answers：{题目编号: 原始赋值/None}，None表示选中无效选项
+    return：(1,158)的数组，严格匹配模型训练时的输入维度和顺序
+    """
+    final_158_feats = []
+    for (q_num, target_val, _) in TRAIN_VALID_158_FEATURES:
+        # 获取用户该题的实际结果：有效选项返回赋值（int），无效选项返回None
+        user_val = user_answers.get(q_num, None)
+        # 赋值规则：
+        # 1. 选中有效选项且赋值匹配→1；2. 选中有效选项但赋值不匹配→0；3. 选中无效选项→0
+        if user_val is not None and user_val == target_val:
+            final_158_feats.append(1)
+        else:
+            final_158_feats.append(0)
+    # 转换为模型要求的输入形状：(1, 158)
+    return np.array(final_158_feats).reshape(1, -1)
+
+# ===================== 渲染75道题问卷（支持所有选项填写，区分有效/无效选项） =====================
 def render_questionnaire(df_questions):
-    """渲染问卷，返回模型输入的特征数组"""
+    """渲染问卷，返回用户答题结果：{题目编号: 有效选项赋值/None}，None表示选中无效选项"""
     st.subheader("🏥 Gastrointestinal Heat Retention Risk Assessment Questionnaire", divider="blue")
     st.caption("Please answer all questions (Single choice / Required for each)")
-    user_answers = {}  # 存储{题号: 选项赋值}
+    user_answers = {}  # 存储{题号: 有效选项赋值/None}
 
     # 分批次显示：5道/批，避免页面过长（Cloud端渲染更友好）
     batch_size = 5
@@ -117,24 +153,32 @@ def render_questionnaire(df_questions):
         for idx, row in batch_q.iterrows():
             q_num = idx + 1
             q_text = f"Q{q_num}: {row['Question']}"
-            # 提取有效选项和赋值（过滤空值）
-            options, values = [], []
+            
+            # 🌟 核心修改1：提取所有选项（含有效/无效），用户均可选择
+            all_options = []  # 所有可选选项（展示用）
+            opt_val_map = {}  # 选项文字→有效赋值/None（None=无效选项）
             for opt_i in [1,2,3,4]:
                 opt_col = f"Option{opt_i}"
                 val_col = f"Value{opt_i}"
-                if pd.notna(row[opt_col]) and pd.notna(row[val_col]):
-                    options.append(row[opt_col])
-                    values.append(int(row[val_col]))  # 赋值转整数，与模型一致
-            # 单选框（必填，key唯一，Cloud缓存兼容）
+                if pd.notna(row[opt_col]):  # 只要选项有文字，就加入可选列表
+                    opt_text = row[opt_col]
+                    all_options.append(opt_text)
+                    # 有效选项（Value非空）→ 存储赋值；无效选项（Value为空）→ 存储None
+                    if pd.notna(row[val_col]):
+                        opt_val_map[opt_text] = int(row[val_col])
+                    else:
+                        opt_val_map[opt_text] = None
+            
+            # 🌟 核心修改2：单选框支持所有选项，用户均可选择
             selected_opt = st.radio(
                 label=q_text,
-                options=options,
+                options=all_options,  # 所有选项均可选
                 key=f"q_{q_num}",
                 index=None  # 初始无选择，强制用户点击
             )
-            # 存储赋值
-            if selected_opt:
-                user_answers[q_num] = values[options.index(selected_opt)]
+            # 存储结果：有效选项存赋值，无效选项存None
+            if selected_opt is not None:
+                user_answers[q_num] = opt_val_map[selected_opt]
         st.divider()
 
     # 验证答题完整性
@@ -142,16 +186,7 @@ def render_questionnaire(df_questions):
         st.error(f"⚠️ Please answer all {len(df_questions)} questions! Answered {len(user_answers)} so far.")
         return None
 
-    # 转换为模型输入格式（按题号排序，特征顺序与训练一致）
-    input_feat = np.array([user_answers[q] for q in sorted(user_answers.keys())]).reshape(1, -1)
-    # 应用特征掩码
-    if best_mask is not None and len(best_mask) == input_feat.shape[1]:
-        input_feat = input_feat[:, best_mask]
-        st.info(f"✅ Using feature mask (selected {sum(best_mask)} features)")
-    elif best_mask is not None:
-        st.warning(f"⚠️ Feature mask shape mismatch! Mask: {len(best_mask)}, Input: {input_feat.shape[1]}. Using all features!")
-
-    return input_feat
+    return user_answers
 
 # ===================== 风险预测与结果展示（Cloud 可视化优化） =====================
 def show_prediction_result(input_feat):
@@ -163,8 +198,7 @@ def show_prediction_result(input_feat):
             # Pipeline模型：先标准化再预测
             scaler = rf_model.named_steps.get('scaler')
             if scaler:
-                input_feat_scaled = scaler.transform(input_feat)
-                risk_prob = rf_model.predict_proba(input_feat_scaled)[0,1]
+                risk_prob = rf_model.predict_proba(scaler.transform(input_feat))[0,1]
             else:
                 risk_prob = rf_model.predict_proba(input_feat)[0,1]
         else:
@@ -215,17 +249,20 @@ def show_prediction_result(input_feat):
 def main():
     st.title("🏥 RF Model for Childhood Gastrointestinal Heat Retention Risk Prediction")
     st.caption("Deployed on Streamlit Cloud | For Expert Review")
-    # 渲染问卷
-    input_features = render_questionnaire(df_questions)
-    # 提交按钮（占满宽度，Cloud端更易点击，增加禁用逻辑）
+    # 1. 渲染问卷，获取用户答题结果（{题号: 有效赋值/None}）
+    user_answers = render_questionnaire(df_questions)
+    # 2. 提交按钮（占满宽度，Cloud端更易点击）
     submit_btn = st.button("📤 Submit Answers & Predict Risk", type="primary", use_container_width=True)
     if submit_btn:
-        if input_features is not None:
-            with st.spinner("🔍 Predicting risk... Please wait a moment (about 2-5s)..."):
-                show_prediction_result(input_features)
+        if user_answers is not None:
+            with st.spinner("🔍 Generating features & Predicting risk... Please wait a moment..."):
+                # 3. 核心：生成158个有效特征（无效选项对应特征=0）
+                input_feat = generate_exact_158_feats(user_answers)
+                st.success(f"✅ Feature generation completed! Input shape: {input_feat.shape}")
+                # 4. 预测
+                show_prediction_result(input_feat)
         else:
             st.warning("⚠️ Please complete all questions before submission!")
 
 if __name__ == "__main__":
-
     main()
