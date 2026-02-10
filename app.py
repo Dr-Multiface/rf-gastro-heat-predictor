@@ -46,7 +46,7 @@ TRAIN_VALID_158_FEATURES = [
     (1, 1, "Q1_Option1_Feature1"),   # 第1个特征：Q1选赋值1的选项，哑变量为1，否则0
     (2, 1, "Q2_Option1_Feature2"),   # 第2个特征：Q2选赋值1的选项，哑变量为1，否则0
     (3, 1, "Q3_Option1_Feature3"),   # 第3个特征：Q3选赋值1的选项，哑变量为1，否则0
-    (4, 1, "Q4_Option1_Feature4"),   # 第4个特征：Q5选赋值2的选项，哑变量为1，否则0
+    (4, 1, "Q4_Option1_Feature4"),   # 第4个特征：Q5选2的选项，哑变量为1，否则0
     (5, 1, "Q5_Option1_Feature5"),
     (6, 1, "Q6_Option1_Feature6"),
     (7, 1, "Q7_Option1_Feature7"),
@@ -308,9 +308,11 @@ def render_questionnaire(df_questions):
             q_num = idx + 1
             q_text = f"Q{q_num}: {row['Question']}"
             
-            # 🌟 核心修改1：提取所有选项（含有效/无效），用户均可选择
+            # 🌟 核心修改：为9~58题新增"Always"选项
             all_options = []  # 所有可选选项（展示用）
             opt_val_map = {}  # 选项文字→有效赋值/None（None=无效选项）
+            
+            # 1. 先加载原有选项（Option1-Option4）
             for opt_i in [1,2,3,4]:
                 opt_col = f"Option{opt_i}"
                 val_col = f"Value{opt_i}"
@@ -323,14 +325,20 @@ def render_questionnaire(df_questions):
                     else:
                         opt_val_map[opt_text] = None
             
-            # 🌟 核心修改2：单选框支持所有选项，用户均可选择
+            # 2. 为9~58题新增"Always"选项（标记为无效选项，赋值None）
+            if 9 <= q_num <= 58:
+                always_text = "Always"
+                all_options.append(always_text)
+                opt_val_map[always_text] = None  # Always为无效选项，无赋值
+            
+            # 🌟 渲染单选框，支持所有选项（含新增的Always）
             selected_opt = st.radio(
                 label=q_text,
-                options=all_options,  # 所有选项均可选
+                options=all_options,  # 所有选项均可选（含Always）
                 key=f"q_{q_num}",
                 index=None  # 初始无选择，强制用户点击
             )
-            # 存储结果：有效选项存赋值，无效选项存None
+            # 存储结果：有效选项存赋值，无效选项（含Always）存None
             if selected_opt is not None:
                 user_answers[q_num] = opt_val_map[selected_opt]
         st.divider()
@@ -420,4 +428,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
