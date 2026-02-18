@@ -288,7 +288,7 @@ def generate_exact_158_feats(user_answers):
 # ===================== 渲染75道题问卷（支持所有选项填写，区分有效/无效选项） =====================
 def render_questionnaire(df_questions):
     """渲染问卷，返回用户答题结果：{题目编号: 有效选项赋值/None}，None表示选中无效选项"""
-    st.subheader("🏥 Gastrointestinal Heat Retention Risk Syndrome Assessment Questionnaire", divider="blue")
+    st.subheader("🏥 Gastrointestinal Heat Retention Syndrome Risk Assessment Questionnaire", divider="blue")
     st.caption("Please answer all questions (Single choice / Required for each)")
     user_answers = {}  # 存储{题号: 有效选项赋值/None}
 
@@ -428,5 +428,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
