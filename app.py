@@ -7,7 +7,7 @@ warnings.filterwarnings('ignore')
 
 # ===================== 全局配置（Streamlit Cloud 专属） =====================
 st.set_page_config(
-    page_title="Child Gastrointestinal Heat Retention Risk Predictor",
+    page_title="Child Gastrointestinal Heat Retention Syndrome Risk Predictor",
     page_icon="🏥",
     layout="wide"  # 宽屏适配75道题
 )
@@ -409,7 +409,7 @@ def show_prediction_result(input_feat):
 
 # ===================== 页面主逻辑（Cloud 交互优化） =====================
 def main():
-    st.title("🏥 RF Model for Childhood Gastrointestinal Heat Retention Risk Prediction")
+    st.title("🏥 RF Model for Childhood Gastrointestinal Heat Retention Syndrome Risk Prediction")
     st.caption("Deployed on Streamlit Cloud | For Expert Review")
     # 1. 渲染问卷，获取用户答题结果（{题号: 有效赋值/None}）
     user_answers = render_questionnaire(df_questions)
@@ -428,3 +428,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
