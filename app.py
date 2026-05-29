@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import joblib
 import warnings
+import os
+import datetime
 warnings.filterwarnings('ignore')
 
 # ===================== 全局配置 =====================
@@ -302,7 +304,7 @@ def render_questionnaire(df_questions):
         return None
     return user_answers
 
-# ===================== 预测结果 + 免责 + 反馈 =====================
+# ===================== 预测结果 + 免责 + 反馈（带CSV存储） =====================
 def show_prediction_result(input_feat):
     st.subheader("📊 Prediction Result", divider="red")
     try:
@@ -334,9 +336,7 @@ def show_prediction_result(input_feat):
     </div>
     """, unsafe_allow_html=True)
 
-    # --------------------------
-    # 最终版：免责声明 + 反馈系统
-    # --------------------------
+    # 免责声明
     st.markdown("---")
     st.markdown("### ⚠️ Official Medical Disclaimer")
     st.markdown("""
@@ -346,11 +346,23 @@ def show_prediction_result(input_feat):
     For any health concerns, please consult a qualified healthcare professional.
     """)
 
+    # 反馈模块（持久化保存到 user_feedback.csv）
     st.markdown("### 📩 User Feedback & Reporting System")
     feedback = st.text_area("Enter your feedback, questions, or concerns:", height=100)
     if st.button("Submit Feedback", use_container_width=True):
         if feedback.strip():
-            st.success("✅ Feedback submitted successfully. All reports are logged and monitored by the team.")
+            feedback_data = {
+                "submit_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "feedback_content": feedback.strip()
+            }
+            feedback_file = "user_feedback.csv"
+            try:
+                df_feedback = pd.DataFrame([feedback_data])
+                df_feedback.to_csv(feedback_file, mode="a", header=not os.path.exists(feedback_file),
+                                   index=False, encoding="utf-8-sig")
+                st.success("✅ Feedback submitted successfully. All reports are logged and monitored by the team.")
+            except Exception as e:
+                st.error(f"Feedback save failed: {str(e)}")
         else:
             st.warning("Please enter feedback before submitting.")
 
